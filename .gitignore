@@ -1,1 +1,2 @@
-notebooks/taxinyc.dbdata/processed/clean_yellow_2025-01*.parquet
+notebooks/taxinyc.db
+data/processed/clean_yellow_2025-01*.parquet
