@@ -31,6 +31,7 @@ page = st.sidebar.radio(
     [
         'Executive Overview',
         'Demand Patterns',
+        'Revenue Patterns',
         'Zone Analysis',
         'Tip Analysis',
         'Data Quality',
@@ -39,7 +40,7 @@ page = st.sidebar.radio(
 )
 
 if page == 'Executive Overview':
-    st.header('Executive Overview')
+    st.title('Executive Overview')
     
     total_revenue = db_clean['total_amount'].sum()
     total_trip = db_clean['tpep_pickup_datetime'].count()
@@ -54,7 +55,7 @@ if page == 'Executive Overview':
     st.metric ('Date Range', f'{db_clean['tpep_pickup_datetime'].min()} - {db_clean['tpep_pickup_datetime'].max()} ({db_clean['tpep_pickup_datetime'].max() - db_clean['tpep_pickup_datetime'].min()}')
     
 elif page == 'Demand Patterns' :
-    st.header('Demand Patterns')
+    st.title('Demand Patterns')
     
     st.header('Hourly Demand')
     st.subheader('')
@@ -67,7 +68,7 @@ elif page == 'Demand Patterns' :
     hourax.set_ylabel('Trip Count')
     hourax.set_xticks(mart_hourly['pickup_hour'])
     
-    st.pyplot(hourfig,use_container_width=True)
+    st.pyplot(hourfig, width='stretch')
     
     #-------
     st.header('Daily Demand')
@@ -80,41 +81,84 @@ elif page == 'Demand Patterns' :
     daily_ax.set_xlabel('Day of Week')
     daily_ax.set_ylabel('Trip Count')
     daily_ax.set_xticks(mart_daily['pickup_dayofw'])
-    st.pyplot(daily_fig,use_container_width=True)
+    st.pyplot(daily_fig, width='stretch')
     
-    #------
+elif page == 'Revenue Patterns' :
+    st.title('Revenue Patterns')
     
     revenue_day = (
-        db_clean.groupby('pickup_date')
-        .agg(
-            total_passenger = ('passenger_count','sum'),
-            trip_count = ('tpep_pickup_datetime','count'),
-            avg_trip_distance =('trip_distance','mean'),
-            revenue= ("total_amount","sum"),
-            avg_tip_rate = ('tip_rate','mean'),
-            avg_duration = ('duration_mins','mean')
+            db_clean.groupby('pickup_date')
+            .agg(
+                total_passenger = ('passenger_count','sum'),
+                trip_count = ('tpep_pickup_datetime','count'),
+                avg_trip_distance =('trip_distance','mean'),
+                revenue= ("total_amount","sum"),
+                avg_tip_rate = ('tip_rate','mean'),
+                avg_duration = ('duration_mins','mean')
+            )
+            .sort_values('pickup_date', ascending = False)
+            .reset_index()
         )
-        .sort_values('pickup_date', ascending = False)
-        .reset_index()
-    )
     revenue_day['avg_tip_rate'] = revenue_day['avg_tip_rate'] * 100
-    
+        
     st.header('Trip count during the month')
     st.subheader('')
     
     month_fig, month_ax = plt.subplots(figsize = (10,5))
-    month_ax.bar(revenue_day['pickup_date'],revenue_day['trip_count'])
+    month_ax.bar(revenue_day['pickup_date'],revenue_day['revenue'])
 
     month_ax.grid(True, alpha = 0.5, axis = 'y')
     month_ax.set_xlabel('Day of Month')
-    month_ax.set_ylabel('Trip Count')
-    month_ax.set_xticklabels(revenue_day['pickup_date'], rotation = 60, ha = 'right')
-    st.pyplot(month_fig,use_container_width=True)
-        
+    month_ax.set_ylabel('Revenue')
+    month_ax.set_xticks(revenue_day['pickup_date'].astype(str).to_list())
+    month_ax.tick_params(axis='x', rotation=60)
+    st.pyplot(month_fig, width='stretch')
+    
+    # Revenue by hour
+    st.header('Revenue each pickup hour')
+    st.subheader('')
+    Avg_fare_hour = mart_hourly.sort_values('revenue', ascending = False)
+    
+    fare_fig, fare_ax =  plt.subplots(figsize = (10,5))
+    fare_ax.bar(Avg_fare_hour ['pickup_hour'],Avg_fare_hour ['revenue'])
+
+    fare_ax.grid(True, alpha = 0.5, axis = 'y')
+    fare_ax.set_xlabel('Hour')
+    fare_ax.set_ylabel('Fare')
+    fare_ax.set_xticks(Avg_fare_hour['pickup_hour'])
+    
+    st.pyplot(fare_fig, width='stretch')
     
 elif page == 'Zone Analysis': 
     st.title('Zone Analysis')
     taxi_zone = pd.read_csv('../TAXINYC/data/raw/taxi_zone_lookup.csv')
+
+    #-----Zone revenue
+    st.title('Zone Revenue')
+    taxi_zone = pd.read_csv('../TAXINYC/data/raw/taxi_zone_lookup.csv')
+
+    mart_pickup = mart_pickup.merge(
+        taxi_zone[['LocationID','Zone']],
+        left_on='PULocationID',
+        right_on='LocationID',
+        how='left'
+    ).rename(columns = {'Zone':'pickup_zone'}).drop(columns=['LocationID'])
+    top_revenue_PU = mart_pickup.sort_values('total_amount', ascending= False).head(20)
+    
+    st.header('Top Pick Up Zone By Trips')
+    PUR_fig, PUR_ax = plt.subplots(figsize = (10,5))
+
+    PUR_ax.bar(top_revenue_PU['pickup_zone'].to_list(),top_revenue_PU ['total_amount'])
+
+    PUR_ax.set_xlabel('Zone')
+    PUR_ax.set_ylabel('Trips')
+    PUR_ax.set_xticks(range(len(top_revenue_PU))) 
+    PUR_ax.set_xticklabels(
+        top_revenue_PU['pickup_zone'].astype(str), rotation = 45, ha='right'
+    )
+    
+    st.pyplot(PUR_fig,  width='stretch')
+    
 
     mart_pickup = mart_pickup.merge(
         taxi_zone[['LocationID','Zone']],
@@ -136,7 +180,7 @@ elif page == 'Zone Analysis':
         top_PU['pickup_zone'].astype(str), rotation = 45, ha='right'
     )
     
-    st.pyplot(PU_fig, use_container_width=True)
+    st.pyplot(PU_fig,  width='stretch')
     
     
     #common drop off zones
@@ -162,7 +206,7 @@ elif page == 'Zone Analysis':
         dropoff_common['dropoff_zone'].astype(str), rotation = 45, ha='right'
     )
     
-    st.pyplot(DO_fig, use_container_width=True)
+    st.pyplot(DO_fig,  width='stretch')
     
     #Top pickup dropoff pair
 
@@ -201,16 +245,16 @@ elif page == 'Zone Analysis':
     PUDO_ax.set_ylabel('Zone Pair')
     PUDO_ax.grid(True, alpha = 0.5, axis = 'x')
     
-    st.pyplot(PUDO_fig, use_container_width=True)
-        
+    st.pyplot(PUDO_fig,  width='stretch')
+
+    
         
         
     
 elif page == 'Tip Analysis':
+    st.title('Tip Analysis')
+    
     #Tip rate by payment
-    
-    st.header('Tip Analysis')
-    
     st.header('Average Tip by Payment method')
     st.subheader('')
     
@@ -222,33 +266,53 @@ elif page == 'Tip Analysis':
     tip_ax.set_ylabel('Tip Rate')
     tip_ax.set_xticks(mart_tip['payment_type'])
     
-    st.pyplot(tip_fig,use_container_width=True)
+    st.pyplot(tip_fig, width='stretch')
     
     #-----
-    
-    
-    Avg_fare_hour = (
-        db_clean.groupby('pickup_hour')
-        .agg(
-            avg_fare = ('fare_amount','mean')
-        )
-        .sort_values('pickup_hour', ascending = False)
-        .reset_index()
-        )
+    st.header('Tip rate by hour')
 
-    st.header('Average Fare by pickup hour')
     st.subheader('')
-    
-    fare_fig, fare_ax =  plt.subplots(figsize = (10,5))
-    fare_ax.bar(Avg_fare_hour ['pickup_hour'],Avg_fare_hour ['avg_fare'])
+        
+    hourtip_fig, hourtip_ax =  plt.subplots(figsize = (10,5))
+    hourtip_ax.bar(mart_hourly['pickup_hour'],mart_hourly['avg_tip_rate'])
 
-    fare_ax.grid(True, alpha = 0.5, axis = 'y')
-    fare_ax.set_xlabel('Hour')
-    fare_ax.set_ylabel('Fare')
-    fare_ax.set_xticks(Avg_fare_hour['pickup_hour'])
+    hourtip_ax.grid(True, alpha = 0.5, axis = 'y')
+    hourtip_ax.set_xlabel('Hour')
+    hourtip_ax.set_ylabel('Tip Rat (%)')
+    hourtip_ax.set_xticks(mart_hourly['pickup_hour'])
     
-    st.pyplot(fare_fig,use_container_width=True)
+    st.pyplot(hourtip_fig, width='stretch')
+    
+    
 elif page == 'Data Quality':
-    ...
-elif page == 'Anomal Review':
-    ...
+    st.title('Data Quality')
+    
+    total_trip = db_clean['tpep_pickup_datetime'].count()
+    rejected_trip = db_rejected['tpep_pickup_datetime'].count()
+    reject_pct = rejected_trip / (total_trip+rejected_trip) * 100
+    
+    col1, col2 = st.columns(2)
+    
+    col1.metric('Rejected Records', f'{rejected_trip:.0f}')
+    col2.metric('Reject Percentage', f'{reject_pct:.2f}%')
+    
+    st.header('Data quality Problems')
+    st.write(' **Unphysical Physics:** Negative or zero duration values (`tpep_dropoff_datetime` equal to or after `tpep_pickup_datetime`) and zero distances with possitive fare amounts.')
+    st.write(' **Meter Logging Errors:** Negative or zero fare amounts, negative tips, or impossbile calculated speeds (>80mph).')
+    st.write(" **Missing/Invalid Passenger Counts:** Records with '0' or 'NaN' passengers. ")
+    
+    st.header('Rejected Breakdown')
+    st.markdown("""
+
+    | Rejected Reason | Row Count | % of Raw Data | Business Justification |
+    |:--- |:---|:---|:---|
+    | Negative Or 0 Duration | 2051 | | |
+    | Zero Distance trip | 90893 | | |
+    | No passenger | 24656 | | |
+    | Missing pickup dropoff location | 0 | | |
+    """)
+elif page == 'Anomaly Review':
+    st.title('Anomaly Review')
+    
+    st.write(r"1. **Extreme Distance ($\geq$ 50 miles):** 490 records. Kept because these represent legitimate long_distance out-of-city charter trips")    
+    st.write(r"2. **Extreme Fare ($\geq$ \$300):** 2865 records. Kept as valid high-value commercial runs")

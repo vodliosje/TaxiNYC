@@ -26,11 +26,12 @@
 
 ## 4. Rejected Record Breakdown
 
-| Rejected Reason | Row Count | % of Raw Data | Business Justification |
-| Negative Or 0 Duration | 2051 | | |
-| Zero Distance trip | 90893 | | |
-| No passenger | 24656 | | |
-| Missing pickup dropoff location | 0 | | |
+| Rejected Reason                 | Row Count | % of Raw Data | Business Justification |
+| :------------------------------ | :-------- | :------------ | :--------------------- |
+| Negative Or 0 Duration          | 2051      |               |                        |
+| Zero Distance trip              | 90893     |               |                        |
+| No passenger                    | 24656     |               |                        |
+| Missing pickup dropoff location | 0         |               |                        |
 
 ## 5. Anomaly (Retain Outliers)
 
