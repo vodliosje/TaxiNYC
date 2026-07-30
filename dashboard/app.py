@@ -69,6 +69,7 @@ elif page == 'Demand Patterns' :
     
     st.pyplot(hourfig,use_container_width=True)
     
+    #-------
     st.header('Daily Demand')
     st.subheader('')
     
@@ -81,8 +82,35 @@ elif page == 'Demand Patterns' :
     daily_ax.set_xticks(mart_daily['pickup_dayofw'])
     st.pyplot(daily_fig,use_container_width=True)
     
+    #------
     
+    revenue_day = (
+        db_clean.groupby('pickup_date')
+        .agg(
+            total_passenger = ('passenger_count','sum'),
+            trip_count = ('tpep_pickup_datetime','count'),
+            avg_trip_distance =('trip_distance','mean'),
+            revenue= ("total_amount","sum"),
+            avg_tip_rate = ('tip_rate','mean'),
+            avg_duration = ('duration_mins','mean')
+        )
+        .sort_values('pickup_date', ascending = False)
+        .reset_index()
+    )
+    revenue_day['avg_tip_rate'] = revenue_day['avg_tip_rate'] * 100
     
+    st.header('Trip count during the month')
+    st.subheader('')
+    
+    month_fig, month_ax = plt.subplots(figsize = (10,5))
+    month_ax.bar(revenue_day['pickup_date'],revenue_day['trip_count'])
+
+    month_ax.grid(True, alpha = 0.5, axis = 'y')
+    month_ax.set_xlabel('Day of Month')
+    month_ax.set_ylabel('Trip Count')
+    month_ax.set_xticklabels(revenue_day['pickup_date'], rotation = 60, ha = 'right')
+    st.pyplot(month_fig,use_container_width=True)
+        
     
 elif page == 'Zone Analysis': 
     st.title('Zone Analysis')
@@ -171,8 +199,7 @@ elif page == 'Zone Analysis':
 
     PUDO_ax.set_xlabel('Trips Count')
     PUDO_ax.set_ylabel('Zone Pair')
-    PUDO_ax.set_xticks(range(len(top_10_pair))) 
-    #Note fix trip count here
+    PUDO_ax.grid(True, alpha = 0.5, axis = 'x')
     
     st.pyplot(PUDO_fig, use_container_width=True)
         
@@ -180,7 +207,47 @@ elif page == 'Zone Analysis':
         
     
 elif page == 'Tip Analysis':
-    ...
+    #Tip rate by payment
+    
+    st.header('Tip Analysis')
+    
+    st.header('Average Tip by Payment method')
+    st.subheader('')
+    
+    tip_fig, tip_ax =  plt.subplots(figsize = (10,5))
+    tip_ax.bar(mart_tip['payment_type'],mart_tip['avg_tip_rate'])
+
+    tip_ax.grid(True, alpha = 0.5, axis = 'y')
+    tip_ax.set_xlabel('Hour')
+    tip_ax.set_ylabel('Tip Rate')
+    tip_ax.set_xticks(mart_tip['payment_type'])
+    
+    st.pyplot(tip_fig,use_container_width=True)
+    
+    #-----
+    
+    
+    Avg_fare_hour = (
+        db_clean.groupby('pickup_hour')
+        .agg(
+            avg_fare = ('fare_amount','mean')
+        )
+        .sort_values('pickup_hour', ascending = False)
+        .reset_index()
+        )
+
+    st.header('Average Fare by pickup hour')
+    st.subheader('')
+    
+    fare_fig, fare_ax =  plt.subplots(figsize = (10,5))
+    fare_ax.bar(Avg_fare_hour ['pickup_hour'],Avg_fare_hour ['avg_fare'])
+
+    fare_ax.grid(True, alpha = 0.5, axis = 'y')
+    fare_ax.set_xlabel('Hour')
+    fare_ax.set_ylabel('Fare')
+    fare_ax.set_xticks(Avg_fare_hour['pickup_hour'])
+    
+    st.pyplot(fare_fig,use_container_width=True)
 elif page == 'Data Quality':
     ...
 elif page == 'Anomal Review':
