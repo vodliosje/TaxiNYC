@@ -4,3 +4,4 @@ data/processed/clean_duck_2025-01.parquet
 data/marts/mart_duck_hourly.parquet
 data/processed/rejected_yellow_2025-01.parquet
 data/processed/clean_taxinyc_2025.parquet
+notebooks/clean_taxinyc.db
