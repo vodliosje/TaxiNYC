@@ -5,3 +5,8 @@ data/marts/mart_duck_hourly.parquet
 data/processed/rejected_yellow_2025-01.parquet
 data/processed/clean_taxinyc_2025.parquet
 notebooks/clean_taxinyc.db
+data/marts/mart_duck_daily.parquet
+data/marts/mart_duck_dropoff.parquet
+data/marts/mart_duck_tip.parquet
+data/marts/mart_duck_pickup.parquet
+data/marts/mart_duck_dist.parquet
