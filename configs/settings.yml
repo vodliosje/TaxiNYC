@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------
+# Single source of truth for everything environment- or dataset-specific.
+# Nothing in src/taxi hardcodes a path, a URL, a month range or an engine knob.
+# Swapping dataset (green taxi, FHV, ...) = edit `dataset` + point at a contract.
+# ---------------------------------------------------------------------------
+project:
+  name: nyc-taxi
+  timezone: America/New_York        # TLC timestamps are local wall-clock, not UTC
+
+paths:
+  root: .                            # resolved relative to the repo root
+  raw: data/raw
+  reference: data/raw/reference
+  clean: data/clean
+  rejected: data/rejected
+  features: data/features
+  marts: data/marts
+  models: data/models
+  metadata: data/metadata
+  tmp: data/_tmp
+  docs_generated: docs/generated
+
+dataset:
+  name: yellow
+  entity: trips
+  contract: contracts/trips.yml
+  mart_registry: contracts/marts.yml
+  source:
+    kind: https
+    url_template: "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{year:04d}-{month:02d}.parquet"
+    filename_template: "yellow_tripdata_{year:04d}-{month:02d}.parquet"
+    subdir: yellow
+  reference_sources:
+    - name: zones
+      url: "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+      filename: taxi_zone_lookup.csv
+      key: LocationID
+
+# Engine settings are pinned because they are part of the reproducibility story:
+# a run's metadata records them, and determinism checks assume them.
+engine:
+  threads: 4
+  memory_limit: 6GB
+  preserve_insertion_order: false    # output order is forced by ORDER BY, not by this
+  temp_directory: data/_tmp
+
+storage:
+  compression: zstd
+  row_group_size: 122880             # DuckDB default; pinned so file bytes are stable
+  partition_keys: [year, month]
+  clean_sort_keys: [tpep_pickup_datetime, PULocationID, DOLocationID]
+
+ingestion:
+  # What to do when a source file is unchanged since the last successful ingest.
+  # skip     -> do nothing, record a SKIPPED run (default; cheap and honest)
+  # recompute-> rebuild and assert the fingerprint is unchanged (determinism proof)
+  unchanged_source_behavior: skip
+  rejected_reason_model: array       # Option A from the design note; see DATA-CONTRACT.md
+
+ml:
+  target: fare_amount
+  # Temporal split. Adjust after inspecting actual month coverage.
+  train_months: [2025-01, 2025-09]
+  validation_months: [2025-10, 2025-11]
+  test_months: [2025-12, 2025-12]
+  # Training on 48M rows is not required to answer the modelling question; a
+  # seeded per-month sample keeps train time honest and reproducible.
+  train_sample_rows_per_month: 400000
+  eval_sample_rows_per_month: null      # null = evaluate on every row
+  random_state: 42
+  models: [median_baseline, grouped_baseline, linear_regression, hist_gradient_boosting]
+  segments: [month, hour_of_day, pickup_zone, distance_bucket, fare_bucket]
+
+# Bucket edges live here so the mart SQL and the ML segment analysis cannot
+# drift apart: both render their buckets from this one list.
+analysis:
+  distance_buckets: [0, 1, 2, 3, 5, 10, 20, 1000]
+  fare_buckets: [0, 10, 20, 30, 50, 100, 1000000]
+
+benchmark:
+  queries: configs/benchmarks.yml
+  repeats: 3                          # report the median; cold/warm noted per run

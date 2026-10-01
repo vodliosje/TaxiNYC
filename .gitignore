@@ -10,3 +10,23 @@ data/marts/mart_duck_dropoff.parquet
 data/marts/mart_duck_tip.parquet
 data/marts/mart_duck_pickup.parquet
 data/marts/mart_duck_dist.parquet
+# Data is reproducible from source files + code; never commit it.
+data/**
+!data/.gitkeep
+!data/metadata/.gitkeep
+docs/generated/**
+!docs/generated/.gitkeep
+evidence/**
+!evidence/.gitkeep
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+.DS_Store

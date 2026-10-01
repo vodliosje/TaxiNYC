@@ -1,0 +1,184 @@
+# ===========================================================================
+# MART REGISTRY - the analytical contract layer
+# ===========================================================================
+# A mart exists here only if a named consumer asks a named question of it.
+# Each entry is the mart's contract: purpose, grain, dimensions, measures,
+# upstream dependencies and refresh behaviour. The dependency graph used for
+# incremental rebuild is *derived* from `upstream`, never maintained by hand.
+#
+# Design rule that makes incremental rebuild correct:
+#   every mart is partitioned by (year, month) and additive at month grain.
+# Cross-month totals are computed at read time by summing partitions, which is
+# cheap because marts are small. Consequently a change to month M can only ever
+# invalidate month M of any mart - never the whole mart.
+#
+# Measures are split into:
+#   additive     - safe to SUM across any rollup
+#   non_additive - correct only at the declared grain (averages, medians).
+#                  Consumers recompute ratios from additive parts instead.
+# ===========================================================================
+registry_version: "1.0.0"
+
+# Non-mart nodes so the graph is complete and every edge has a real endpoint.
+assets:
+  - name: source_files
+    kind: source
+    description: "Monthly TLC Parquet releases; immutable inputs."
+  - name: clean_trips
+    kind: layer
+    upstream: [source_files]
+    description: "Contract-conformant trips, partitioned by pickup month."
+  - name: rejected_trips
+    kind: layer
+    upstream: [source_files]
+    description: "Rows that broke at least one rule, with reason codes."
+  - name: dim_zone
+    kind: dimension
+    upstream: [source_files]
+    partitioned: false
+    refresh: full
+    sql: dim_zone.sql
+    description: "TLC taxi zone lookup: LocationID -> zone, borough, service zone."
+  - name: ml_features
+    kind: feature
+    upstream: [clean_trips]
+    description: "Pre-trip feature table; see FEATURE-AUDIT.md."
+
+marts:
+  # ---------------------------------------------------------------------- #
+  - name: mart_daily_revenue
+    purpose: "Daily demand and revenue trend; the top-line series on the dashboard."
+    question: "How do trips and revenue change day to day?"
+    grain: "one row per pickup_date"
+    dimensions: [pickup_date, year, month, day_of_week, is_weekend]
+    measures:
+      additive: [trip_count, total_fare, total_revenue, total_tips,
+                 total_distance_miles, total_duration_minutes]
+      non_additive: [avg_fare, avg_tip, avg_distance_miles,
+                     avg_duration_minutes, median_fare]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_daily_revenue.sql
+    consumers: ["dashboard:Executive Overview", "dashboard:Revenue Trends"]
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_hourly_demand
+    purpose: "Demand shape across the day, used for staffing and surge questions."
+    question: "When during the day is demand highest?"
+    grain: "one row per (year, month, hour_of_day, is_weekend)"
+    dimensions: [year, month, hour_of_day, is_weekend]
+    measures:
+      additive: [trip_count, total_revenue, total_fare, total_duration_minutes]
+      non_additive: [avg_fare, avg_duration_minutes, avg_speed_mph]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_hourly_demand.sql
+    consumers: ["dashboard:Demand Patterns"]
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_hourly_zone
+    purpose: "Where demand is, and when. The densest mart; drives the zone-hour heatmap."
+    question: "Which zones are busy at which hours?"
+    grain: "one row per (pickup_date, hour_of_day, PULocationID)"
+    dimensions: [pickup_date, year, month, hour_of_day, PULocationID]
+    measures:
+      additive: [trip_count, total_revenue, total_fare, total_duration_minutes]
+      non_additive: [avg_fare, avg_duration_minutes]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_hourly_zone.sql
+    consumers: ["dashboard:Zone Analysis", "dashboard:Demand Patterns"]
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_zone_pickup_demand
+    purpose: "Ranked pickup zones by volume and revenue."
+    question: "Which pickup zones generate the most trips and revenue?"
+    grain: "one row per (year, month, PULocationID)"
+    dimensions: [year, month, PULocationID]
+    measures:
+      additive: [trip_count, total_revenue, total_fare, total_tips,
+                 total_distance_miles, total_duration_minutes]
+      non_additive: [avg_fare, avg_distance_miles, avg_duration_minutes, avg_tip_rate]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_zone_pickup_demand.sql
+    consumers: ["dashboard:Zone Analysis", "dashboard:Executive Overview"]
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_zone_dropoff_demand
+    purpose: "Ranked dropoff zones; the demand-sink counterpart to pickups."
+    question: "Which dropoff zones absorb the most trips and revenue?"
+    grain: "one row per (year, month, DOLocationID)"
+    dimensions: [year, month, DOLocationID]
+    measures:
+      additive: [trip_count, total_revenue, total_fare,
+                 total_distance_miles, total_duration_minutes]
+      non_additive: [avg_fare, avg_distance_miles, avg_duration_minutes]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_zone_dropoff_demand.sql
+    consumers: ["dashboard:Zone Analysis"]
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_od_pairs
+    purpose: "Origin-destination flows; the basis of route-level questions."
+    question: "Which origin-destination pairs are most common and most valuable?"
+    grain: "one row per (year, month, PULocationID, DOLocationID)"
+    dimensions: [year, month, PULocationID, DOLocationID]
+    measures:
+      additive: [trip_count, total_revenue, total_fare,
+                 total_distance_miles, total_duration_minutes]
+      non_additive: [avg_fare, avg_distance_miles, avg_duration_minutes, avg_speed_mph]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_od_pairs.sql
+    consumers: ["dashboard:Pickup/Dropoff Flows"]
+    notes: "Bounded at 265x265 pairs per month, so month grain stays small."
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_payment_tip_behavior
+    purpose: "Tipping behaviour by payment method and time of day."
+    question: "How does tipping vary with payment type, hour and month?"
+    grain: "one row per (year, month, payment_type, hour_of_day)"
+    dimensions: [year, month, payment_type, hour_of_day]
+    measures:
+      additive: [trip_count, tipped_trip_count, total_tips, total_fare, total_revenue]
+      non_additive: [avg_tip, median_tip, avg_tip_rate, tip_incidence_rate, avg_total_amount]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_payment_tip_behavior.sql
+    consumers: ["dashboard:Tip Analysis"]
+    notes: "Cash tips are not captured by TLC; every tip statistic here is
+            card-only and must be read as such."
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_fare_distance_profile
+    purpose: "Fare/distance/duration relationship by distance band; also the
+              segment definition reused by ML error analysis."
+    question: "How do fare, distance and duration relate?"
+    grain: "one row per (year, month, distance_bucket)"
+    dimensions: [year, month, distance_bucket]
+    measures:
+      additive: [trip_count, total_fare, total_distance_miles, total_duration_minutes]
+      non_additive: [avg_fare, avg_fare_per_mile, avg_duration_minutes,
+                     avg_speed_mph, median_fare, p90_fare]
+    upstream: [clean_trips]
+    refresh: incremental_by_month
+    sql: mart_fare_distance_profile.sql
+    consumers: ["dashboard:Revenue Trends", "dashboard:ML Fare Prediction Summary"]
+
+  # ---------------------------------------------------------------------- #
+  - name: mart_anomalies
+    purpose: "Operational data-quality monitoring over the rejected layer."
+    question: "What is being rejected, at what rate, and is that rate moving?"
+    grain: "one row per (year, month, rejection_reason)"
+    dimensions: [year, month, rejection_reason, is_primary_reason]
+    measures:
+      additive: [rejected_count]
+      non_additive: [share_of_rejected, share_of_raw]
+    upstream: [rejected_trips]
+    refresh: incremental_by_month
+    sql: mart_anomalies.sql
+    consumers: ["dashboard:Data Quality"]
+    notes: "A row can break several rules, so counts by reason sum to more than
+            the rejected row count. Rows flagged is_primary_reason sum exactly."

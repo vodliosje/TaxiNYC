@@ -1,0 +1,134 @@
+# ===========================================================================
+# BENCHMARK WORKLOADS
+# ===========================================================================
+# Each query is defined twice, against the same underlying data:
+#   clean_layer - answered by scanning the partitioned clean layer
+#   mart        - answered from a pre-aggregated mart
+# The runner times both and then checks that they return the same answer, so a
+# speed-up is only ever reported alongside a correctness result. A benchmark
+# that gets faster by returning different numbers is not an optimisation.
+#
+# Bindings available in SQL:
+#   ${clean} ${rejected} ${features} ${zones} ${dim_zone} ${mart_<name>}
+# ===========================================================================
+comparison:
+  relative_tolerance: 0.000001   # floating-point sums reorder; counts must match exactly
+
+queries:
+  - name: dashboard_overview
+    description: "Headline tiles: trips, revenue, average fare, days covered."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT count(*)                        AS trip_count,
+               sum(total_amount)               AS total_revenue,
+               sum(fare_amount) / count(*)     AS avg_fare,
+               count(DISTINCT pickup_date)     AS days_covered
+        FROM ${clean}
+      mart: |
+        SELECT sum(trip_count)                          AS trip_count,
+               sum(total_revenue)                       AS total_revenue,
+               sum(total_fare) / sum(trip_count)        AS avg_fare,
+               count(DISTINCT pickup_date)              AS days_covered
+        FROM ${mart_daily_revenue}
+
+  - name: monthly_revenue
+    description: "Revenue and trip counts per month."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT year, month, count(*) AS trip_count, sum(total_amount) AS total_revenue
+        FROM ${clean} GROUP BY 1, 2 ORDER BY 1, 2
+      mart: |
+        SELECT year, month, sum(trip_count) AS trip_count, sum(total_revenue) AS total_revenue
+        FROM ${mart_daily_revenue} GROUP BY 1, 2 ORDER BY 1, 2
+
+  - name: hourly_demand_by_zone
+    description: "Busiest 50 pickup-zone/hour combinations."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT PULocationID, pickup_hour AS hour_of_day, count(*) AS trip_count
+        FROM ${clean} WHERE PULocationID IS NOT NULL
+        GROUP BY 1, 2 ORDER BY trip_count DESC, 1, 2 LIMIT 50
+      mart: |
+        SELECT PULocationID, hour_of_day, sum(trip_count) AS trip_count
+        FROM ${mart_hourly_zone}
+        GROUP BY 1, 2 ORDER BY trip_count DESC, 1, 2 LIMIT 50
+
+  - name: top_od_pairs
+    description: "Top 25 origin-destination flows by trip count."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT PULocationID, DOLocationID, count(*) AS trip_count,
+               sum(fare_amount) AS total_fare
+        FROM ${clean}
+        WHERE PULocationID IS NOT NULL AND DOLocationID IS NOT NULL
+        GROUP BY 1, 2 ORDER BY trip_count DESC, 1, 2 LIMIT 25
+      mart: |
+        SELECT PULocationID, DOLocationID, sum(trip_count) AS trip_count,
+               sum(total_fare) AS total_fare
+        FROM ${mart_od_pairs}
+        GROUP BY 1, 2 ORDER BY trip_count DESC, 1, 2 LIMIT 25
+
+  - name: zone_revenue_ranking
+    description: "Top 20 pickup zones by revenue, joined to the zone dimension."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT t.PULocationID, count(*) AS trip_count, sum(t.total_amount) AS total_revenue
+        FROM ${clean} t
+        WHERE t.PULocationID IS NOT NULL
+        GROUP BY 1 ORDER BY total_revenue DESC, 1 LIMIT 20
+      mart: |
+        SELECT m.PULocationID, sum(m.trip_count) AS trip_count,
+               sum(m.total_revenue) AS total_revenue
+        FROM ${mart_zone_pickup_demand} m
+        GROUP BY 1 ORDER BY total_revenue DESC, 1 LIMIT 20
+
+  - name: payment_tip_analysis
+    description: "Tip totals and rates by payment type."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT payment_type, count(*) AS trip_count, sum(tip_amount) AS total_tips,
+               sum(tip_amount) / nullif(sum(fare_amount), 0) AS tip_to_fare_ratio
+        FROM ${clean} GROUP BY 1 ORDER BY 1
+      mart: |
+        SELECT payment_type, sum(trip_count) AS trip_count, sum(total_tips) AS total_tips,
+               sum(total_tips) / nullif(sum(total_fare), 0) AS tip_to_fare_ratio
+        FROM ${mart_payment_tip_behavior} GROUP BY 1 ORDER BY 1
+
+  - name: rejection_summary
+    description: "Rejected rows by primary reason - the data-quality page query."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT primary_rejection_reason AS rejection_reason, count(*) AS rejected_count
+        FROM ${rejected} GROUP BY 1 ORDER BY rejected_count DESC, 1
+      mart: |
+        SELECT rejection_reason, sum(rejected_count) AS rejected_count
+        FROM ${mart_anomalies} WHERE is_primary_reason
+        GROUP BY 1 ORDER BY rejected_count DESC, 1
+
+  - name: fare_distance_profile
+    description: "Fare per mile by distance band."
+    compare: true
+    variants:
+      clean_layer: |
+        SELECT ${distance_bucket} AS distance_bucket, count(*) AS trip_count,
+               sum(fare_amount) AS total_fare, sum(trip_distance) AS total_distance_miles
+        FROM ${clean} GROUP BY 1 ORDER BY 1
+      mart: |
+        SELECT distance_bucket, sum(trip_count) AS trip_count,
+               sum(total_fare) AS total_fare, sum(total_distance_miles) AS total_distance_miles
+        FROM ${mart_fare_distance_profile} GROUP BY 1 ORDER BY 1
+
+  - name: ml_feature_scan
+    description: "Full scan of the pre-trip feature table (ML training read path)."
+    compare: false
+    optional: true
+    variants:
+      feature_table: |
+        SELECT count(*) AS n, avg(fare_amount) AS avg_target FROM ${features}

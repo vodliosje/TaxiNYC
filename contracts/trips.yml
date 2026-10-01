@@ -1,0 +1,461 @@
+# ===========================================================================
+# DATA CONTRACT - NYC TLC Yellow Taxi trip records
+# ===========================================================================
+# This file is executable documentation. It drives, with no duplicated logic:
+#   * schema validation of every source file      (taxi.contract)
+#   * the cast/projection list into the clean layer
+#   * the rejection rules and their reason codes  (taxi.validation.rules)
+#   * ML feature eligibility                      (taxi.ml.features)
+#   * contract-conformance tests                  (tests/data_quality)
+#
+# Two type systems are tracked deliberately:
+#   physical_type  - how the value is stored
+#   semantic_type  - what the value means
+# PULocationID is physically an integer and semantically a categorical label.
+# Nothing downstream may treat it as a magnitude.
+# ===========================================================================
+contract_version: "1.0.0"
+dataset: yellow_tripdata
+entity: trip
+grain: "one row per completed metered taxi trip as reported by the vendor"
+source_authority: "NYC Taxi & Limousine Commission monthly trip record files"
+
+partition:
+  keys: [year, month]
+  derive_from: tpep_pickup_datetime   # a row belongs to the month of its pickup
+
+# Rows whose pickup falls outside the partition month are rejected rather than
+# relocated. Relocating them would make a monthly ingest write into a partition
+# it does not own, which breaks both incremental rebuild and determinism.
+partition_integrity: reject_out_of_period
+
+# ---------------------------------------------------------------------------
+# Columns
+# ---------------------------------------------------------------------------
+# required:  the file is unusable without it -> file-level SCHEMA_MISMATCH
+# aliases:   real TLC releases rename columns between months (Airport_fee)
+# available_at_prediction_time: is the value knowable *before the trip starts*
+# ml_role:   target | feature | conditional | excluded  (rationale in FEATURE-AUDIT.md)
+# ---------------------------------------------------------------------------
+columns:
+  - name: VendorID
+    physical_type: INTEGER
+    semantic_type: categorical_id
+    nullable: true
+    required: true
+    allowed_values: [1, 2, 6, 7]
+    definition: "Technology provider that supplied the record."
+    available_at_prediction_time: true
+    ml_role: excluded
+    notes: "Known at dispatch but describes the vendor's stack, not the trip."
+
+  - name: tpep_pickup_datetime
+    physical_type: TIMESTAMP
+    semantic_type: temporal_instant
+    nullable: false
+    required: true
+    valid_range: {min: "2025-01-01 00:00:00", max: "2026-01-02 00:00:00"}
+    threshold_basis: "dataset year plus one day of meter-clock slack"
+    definition: "Meter engagement time, local New York wall clock."
+    available_at_prediction_time: true
+    ml_role: feature
+
+  - name: tpep_dropoff_datetime
+    physical_type: TIMESTAMP
+    semantic_type: temporal_instant
+    nullable: false
+    required: true
+    valid_range: {min: "2025-01-01 00:00:00", max: "2026-01-03 00:00:00"}
+    definition: "Meter disengagement time, local New York wall clock."
+    available_at_prediction_time: false
+    ml_role: excluded
+    notes: "Trip end. Any feature derived from it is post-trip."
+
+  - name: passenger_count
+    physical_type: INTEGER
+    semantic_type: count
+    nullable: true
+    required: false
+    valid_range: {min: 0, max: 9}
+    threshold_basis: "vehicle capacity; TLC yellow medallion vehicles seat at most 6-7"
+    definition: "Passenger count entered by the driver."
+    available_at_prediction_time: conditional
+    ml_role: conditional
+    notes: "Driver-entered and frequently NULL in 2025 files; usable only under an
+            explicit product assumption that the rider states party size."
+
+  - name: trip_distance
+    physical_type: DOUBLE
+    semantic_type: measure_distance_miles
+    nullable: true
+    required: true
+    valid_range: {min: 0, max: 150}
+    threshold_basis: "150 mi exceeds any plausible metered NYC yellow trip (JFK-Montauk ~110 mi)"
+    definition: "Distance reported by the taximeter, in miles."
+    available_at_prediction_time: false
+    ml_role: excluded
+    notes: "Realised distance. A pre-trip model may use an *estimated* distance,
+            not this column. See FEATURE-AUDIT.md."
+
+  - name: RatecodeID
+    physical_type: INTEGER
+    semantic_type: categorical_id
+    nullable: true
+    required: false
+    allowed_values: [1, 2, 3, 4, 5, 6, 99]
+    definition: "Final rate code: 1 standard, 2 JFK, 3 Newark, 4 Nassau/Westchester,
+                 5 negotiated, 6 group ride, 99 unknown."
+    available_at_prediction_time: conditional
+    ml_role: conditional
+    notes: "Final value is set at trip end, but codes 2/3 are determined by the
+            requested destination and are knowable pre-trip when a destination
+            is given. Used only in the destination-known model variant."
+
+  - name: store_and_fwd_flag
+    physical_type: VARCHAR
+    semantic_type: categorical_flag
+    nullable: true
+    required: false
+    allowed_values: ["Y", "N"]
+    definition: "Whether the record was held in vehicle memory before sending."
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: PULocationID
+    physical_type: INTEGER
+    semantic_type: categorical_location
+    nullable: false
+    required: true
+    valid_range: {min: 1, max: 265}
+    reference: {table: zones, column: LocationID}
+    definition: "TLC taxi zone in which the meter was engaged."
+    available_at_prediction_time: true
+    ml_role: feature
+    notes: "Categorical. Never scaled, never ordered."
+
+  - name: DOLocationID
+    physical_type: INTEGER
+    semantic_type: categorical_location
+    nullable: false
+    required: true
+    valid_range: {min: 1, max: 265}
+    reference: {table: zones, column: LocationID}
+    definition: "TLC taxi zone in which the meter was disengaged."
+    available_at_prediction_time: conditional
+    ml_role: conditional
+    notes: "Known pre-trip only if the rider states a destination. Drives the two
+            model variants in ML-PROBLEM.md."
+
+  - name: payment_type
+    physical_type: INTEGER
+    semantic_type: categorical_id
+    nullable: true
+    required: true
+    allowed_values: [0, 1, 2, 3, 4, 5, 6]
+    definition: "1 credit card, 2 cash, 3 no charge, 4 dispute, 5 unknown, 6 voided."
+    available_at_prediction_time: false
+    ml_role: excluded
+    notes: "Recorded at settlement. Correlated with fare through trip type, but
+            not knowable before the trip. Excluded on availability grounds."
+
+  - name: fare_amount
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: true
+    valid_range: {min: 0, max: 1000}
+    threshold_basis: "provisional; confirm against percentiles from `taxi profile`"
+    definition: "Time-and-distance fare computed by the meter."
+    available_at_prediction_time: false
+    ml_role: target
+
+  - name: extra
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: false
+    valid_range: {min: -10, max: 100}
+    definition: "Miscellaneous extras and surcharges (rush hour, overnight)."
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: mta_tax
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: false
+    valid_range: {min: -1, max: 10}
+    definition: "$0.50 MTA tax triggered by metered rate."
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: tip_amount
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: true
+    valid_range: {min: 0, max: 500}
+    definition: "Tip. Populated for card payments only; cash tips are not captured."
+    available_at_prediction_time: false
+    ml_role: excluded
+    notes: "Post-trip outcome. Analysed in marts, never a model input."
+
+  - name: tolls_amount
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: false
+    valid_range: {min: 0, max: 200}
+    definition: "Total tolls paid during the trip."
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: improvement_surcharge
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: false
+    valid_range: {min: -2, max: 10}
+    definition: "Flat improvement surcharge assessed at flag drop."
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: total_amount
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: true
+    valid_range: {min: 0, max: 2000}
+    definition: "Total charged to passenger, excluding cash tips."
+    available_at_prediction_time: false
+    ml_role: excluded
+    notes: "Contains the target. Direct leakage."
+
+  - name: congestion_surcharge
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: false
+    valid_range: {min: -5, max: 50}
+    definition: "NY State congestion surcharge."
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: airport_fee
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: false
+    aliases: ["Airport_fee", "airport_fee", "AirportFee"]
+    valid_range: {min: -10, max: 50}
+    definition: "Per-pickup fee at LaGuardia and JFK."
+    available_at_prediction_time: conditional
+    ml_role: excluded
+    notes: "Casing of this column differs between TLC monthly releases - the
+            reason the contract carries aliases at all."
+
+  - name: cbd_congestion_fee
+    physical_type: DOUBLE
+    semantic_type: currency_usd
+    nullable: true
+    required: false
+    aliases: ["cbd_congestion_fee", "CBD_congestion_fee"]
+    valid_range: {min: -10, max: 50}
+    definition: "Manhattan central business district congestion fee, added in 2025."
+    available_at_prediction_time: false
+    ml_role: excluded
+    notes: "Absent from pre-2025 files. Contract marks it optional so historical
+            months validate without a second contract version."
+
+# ---------------------------------------------------------------------------
+# Derived columns
+# ---------------------------------------------------------------------------
+# Computed once, before validation, and reused by rules, marts and features.
+# `persist: true` columns are stored in the clean layer.
+# ---------------------------------------------------------------------------
+derived:
+  - name: trip_duration_minutes
+    expr: "date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) / 60.0"
+    physical_type: DOUBLE
+    semantic_type: measure_duration_minutes
+    persist: true
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: avg_speed_mph
+    expr: "CASE WHEN date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) > 0
+                THEN trip_distance / (date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) / 3600.0)
+           END"
+    physical_type: DOUBLE
+    semantic_type: measure_speed_mph
+    persist: true
+    available_at_prediction_time: false
+    ml_role: excluded
+
+  - name: pickup_date
+    expr: "CAST(tpep_pickup_datetime AS DATE)"
+    physical_type: DATE
+    semantic_type: temporal_date
+    persist: true
+    available_at_prediction_time: true
+    ml_role: feature
+
+  - name: pickup_hour
+    expr: "EXTRACT(hour FROM tpep_pickup_datetime)"
+    physical_type: INTEGER
+    semantic_type: categorical_cyclical
+    persist: true
+    available_at_prediction_time: true
+    ml_role: feature
+
+  - name: pickup_dayofweek
+    expr: "EXTRACT(dow FROM tpep_pickup_datetime)"
+    physical_type: INTEGER
+    semantic_type: categorical_cyclical
+    persist: true
+    available_at_prediction_time: true
+    ml_role: feature
+    notes: "0 = Sunday (DuckDB convention)."
+
+  - name: is_weekend
+    expr: "EXTRACT(dow FROM tpep_pickup_datetime) IN (0, 6)"
+    physical_type: BOOLEAN
+    semantic_type: categorical_flag
+    persist: true
+    available_at_prediction_time: true
+    ml_role: feature
+
+  - name: tip_rate
+    expr: "CASE WHEN fare_amount > 0 THEN tip_amount / fare_amount END"
+    physical_type: DOUBLE
+    semantic_type: ratio
+    persist: true
+    available_at_prediction_time: false
+    ml_role: excluded
+
+# ---------------------------------------------------------------------------
+# Rejection rules
+# ---------------------------------------------------------------------------
+# `expression` is TRUE when the row VIOLATES the rule.
+# `priority` orders reasons when a row breaks several rules: the lowest number
+#   becomes primary_rejection_reason. Full list is always kept (Option A).
+# Parameters ${partition_start} / ${partition_end_exclusive} are bound per run.
+# ---------------------------------------------------------------------------
+rules:
+  - code: SCHEMA_MISMATCH
+    priority: 5
+    type: cast_failure
+    description: "A required column held a value that could not be cast to its
+                  contract type. File-level schema drift is caught earlier and
+                  fails the run; this catches per-value drift."
+
+  - code: INVALID_TIMESTAMP
+    priority: 10
+    type: expression
+    expression: >-
+      tpep_pickup_datetime IS NULL
+      OR tpep_dropoff_datetime IS NULL
+      OR tpep_pickup_datetime < TIMESTAMP '2001-01-01 00:00:00'
+      OR tpep_pickup_datetime > TIMESTAMP '2100-01-01 00:00:00'
+    description: "Missing or absurd meter timestamps."
+
+  - code: OUT_OF_PERIOD_PICKUP
+    priority: 15
+    type: expression
+    expression: >-
+      tpep_pickup_datetime IS NOT NULL
+      AND (tpep_pickup_datetime <  ${partition_start}
+           OR tpep_pickup_datetime >= ${partition_end_exclusive})
+    description: "Pickup outside the month this file claims to cover. TLC files
+                  routinely carry a small number of such rows; keeping them would
+                  let one month's ingest write into another month's partition."
+
+  - code: NON_POSITIVE_DURATION
+    priority: 20
+    type: expression
+    expression: >-
+      tpep_pickup_datetime IS NOT NULL AND tpep_dropoff_datetime IS NOT NULL
+      AND date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) <= 0
+    description: "Dropoff at or before pickup."
+
+  - code: EXTREME_DURATION
+    priority: 25
+    type: expression
+    expression: >-
+      date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) > 43200
+    threshold_basis: "12 h; far above the observed p99.99 - confirm with `taxi profile`"
+    description: "Meter left running; not a real trip duration."
+
+  - code: NON_POSITIVE_DISTANCE
+    priority: 30
+    type: expression
+    expression: "trip_distance IS NULL OR trip_distance <= 0"
+    description: "Zero-distance trips are meter artefacts, not journeys."
+
+  - code: IMPOSSIBLE_DISTANCE
+    priority: 35
+    type: expression
+    expression: "trip_distance > 150"
+    threshold_basis: "150 mi > any plausible metered yellow trip"
+
+  - code: IMPOSSIBLE_SPEED
+    priority: 40
+    type: expression
+    expression: >-
+      date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) > 0
+      AND trip_distance / (date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) / 3600.0) > 80
+    threshold_basis: "80 mph average is unreachable across NYC street network"
+
+  - code: NEGATIVE_FARE
+    priority: 45
+    type: expression
+    expression: "fare_amount IS NULL OR fare_amount < 0"
+    description: "Negative fares are voided-trip adjustments, not trips."
+
+  - code: NEGATIVE_TOTAL_AMOUNT
+    priority: 50
+    type: expression
+    expression: "total_amount IS NOT NULL AND total_amount < 0"
+    description: "A negative total is a refund or reversal posted against the trip
+                  record, not a trip. Kept in the rejected layer so refunds stay
+                  auditable instead of quietly reducing revenue."
+
+  - code: NEGATIVE_TIP
+    priority: 55
+    type: expression
+    expression: "tip_amount IS NOT NULL AND tip_amount < 0"
+    description: "Tips cannot be negative; such rows are settlement corrections."
+
+  - code: INVALID_PASSENGER_COUNT
+    priority: 60
+    type: expression
+    expression: "passenger_count IS NOT NULL AND (passenger_count < 0 OR passenger_count > 9)"
+    description: "NULL is tolerated: it is common in 2025 files and is handled as
+                  a category by the model rather than discarded."
+
+  - code: MISSING_PICKUP_LOCATION
+    priority: 65
+    type: expression
+    expression: "PULocationID IS NULL"
+
+  - code: MISSING_DROPOFF_LOCATION
+    priority: 70
+    type: expression
+    expression: "DOLocationID IS NULL"
+
+  - code: UNKNOWN_LOCATION_ID
+    priority: 75
+    type: reference
+    columns: [PULocationID, DOLocationID]
+    reference_table: zones
+    reference_column: LocationID
+    description: "Location id absent from the TLC zone lookup. Skipped with a
+                  warning when the lookup has not been acquired."
+
+  - code: DUPLICATE_EXACT_ROW
+    priority: 80
+    type: duplicate
+    description: "Byte-identical repeat of another row in the same source file.
+                  The first occurrence is kept; later ones are rejected. Trips
+                  are not uniquely identified by TLC, so exact repetition is the
+                  only defensible duplicate definition available."
